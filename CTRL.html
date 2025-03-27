@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Cross-Platform Shooter Game</title>
+    <style>
+        :root { --joystick-size: 100px; --joystick-knob-size: 40px; --primary-color: #00ff00; --glow-color: #00ff88; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { height: 100%; overflow: hidden; background: linear-gradient(180deg, #1a0033, #000033); touch-action: manipulation; font-family: Arial; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #joystickContainer { position: fixed; bottom: 20px; left: 20px; width: var(--joystick-size); height: var(--joystick-size); display: none; touch-action: none; }
+        #joystickBase { width: 100%; height: 100%; background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 70%); border-radius: 50%; border: 1px solid var(--glow-color); }
+        #joystick { position: absolute; width: var(--joystick-knob-size); height: var(--joystick-knob-size); background: radial-gradient(circle, var(--primary-color), #00cc00); border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); transition: all 0.1s ease-out; box-shadow: 0 0 10px var(--glow-color); }
+        #shootJoystickContainer { position: fixed; bottom: 120px; right: 20px; width: var(--joystick-size); height: var(--joystick-size); display: none; touch-action: none; }
+        #shootJoystickBase { width: 100%; height: 100%; background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.1) 70%); border-radius: 50%; border: 1px solid var(--glow-color); }
+        #shootJoystick { position: absolute; width: var(--joystick-knob-size); height: var(--joystick-knob-size); background: radial-gradient(circle, var(--primary-color), #00cc00); border-radius: 50%; top: 50%; left: 50%; transform: translate(-50%, -50%); transition: all 0.1s ease-out; box-shadow: 0 0 10px var(--glow-color); }
+        #startScreen { position: fixed; inset: 0; background: radial-gradient(circle at center, rgba(0, 0, 51, 0.8), rgba(0, 0, 0, 0.9)); display: flex; justify-content: center; align-items: center; color: white; z-index: 10; }
+        #startButton { padding: 20px 40px; font-size: 20px; background: linear-gradient(45deg, var(--primary-color), #00cc00); border: 2px solid var(--glow-color); border-radius: 8px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; color: white; text-shadow: 0 0 5px var(--glow-color); }
+        #startButton:hover { transform: scale(1.05); box-shadow: 0 0 15px var(--glow-color); }
+        #mobileStartButton { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 15px 30px; font-size: 18px; background: linear-gradient(45deg, var(--primary-color), #00cc00); border: 2px solid var(--glow-color); border-radius: 8px; display: none; z-index: 5; color: white; text-shadow: 0 0 5px var(--glow-color); }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="joystickContainer"><div id="joystickBase"></div><div id="joystick"></div></div>
+    <div id="shootJoystickContainer"><div id="shootJoystickBase"></div><div id="shootJoystick"></div></div>
+    <div id="startScreen"><button id="startButton">Start Game</button></div>
+    <button id="mobileStartButton">Start</button>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('gameCanvas'),
+                  ctx = canvas.getContext('2d', { alpha: false }),
+                  Config = { PLAYER_SIZE: 20, ENEMY_SIZE: 33, ENEMY_SPEED: 6, LASER_SPEED: 33, LASER_LENGTH: 69, LASER_WIDTH: 6,
+                            SHOT_COOLDOWN: 69, SPAWN_INTERVAL: 2222, EXPLOSION_MAX_RADIUS: 150, EXPLOSION_DURATION: 500, FPS_TARGET: 60,
+                            ENEMY_ROTATION_SPEED: 0.02, ENEMY_ZOOM_MIN: 0.5, ENEMY_ZOOM_MAX: 6.0, ENEMY_ZOOM_SPEED: 0.028,
+                            MODE7_HORIZON: 300, MODE7_PERSPECTIVE: 0.5, MUZZLE_FLASH_SIZE: 60, MUZZLE_FLASH_DURATION: 100,
+                            LASER_PULSE_SPEED: 10, STAR_COUNT: 200, STAR_SPEED: 0.03, STAR_MAX_BRIGHTNESS: 1.0, STAR_MIN_BRIGHTNESS: 0.2,
+                            STAR_TWINKLE_CHANCE: 0.01, STAR_GLOW_SIZE: 5, CITY_COUNT: 30, CITY_SPEED: 0.015, CITY_MIN_SIZE: 150,
+                            CITY_MAX_SIZE: 600, CITY_LIGHT_COUNT: 15, CITY_LIGHT_TWINKLE_CHANCE: 0.05, CITY_SPACING_FACTOR: 1.125,
+                            TINY_CITY_COUNT: 50, TINY_CITY_MIN_SIZE: 20, TINY_CITY_MAX_SIZE: 50, MOVE_SPEED: 7.2, ROTATION_SPEED: 0.05 },
+                  state = { gameStarted: false, score: 0, previousScore: 0, lastShotTime: 0, lastSpawnTime: 0, lastTime: performance.now(),
+                            keys: new Set(), gamepadConnected: false, joystick: { x: 0, y: 0, active: false, touchId: null },
+                            shootJoystick: { x: 0, y: 0, active: false, touchId: null }, mouseX: 0, mouseY: 0, mouseDown: false,
+                            isShooting: false, stars: [], cities: [], tinyCities: [], playerRotation: 0, lastPauseTime: 0 },
+                  player = { x: canvas.width / 2, y: canvas.height / 2 }, lasers = [], enemies = [], explosions = [], muzzleFlashes = [],
+                  camera = { x: 0, y: 0 }, assets = { playerImage: new Image(), enemyImage: new Image(), loaded: false },
+                  audioCtx = new (window.AudioContext || window.webkitAudioContext)(),
+                  joystickContainer = document.getElementById('joystickContainer'),
+                  joystick = document.getElementById('joystick'),
+                  shootJoystickContainer = document.getElementById('shootJoystickContainer'),
+                  shootJoystick = document.getElementById('shootJoystick'),
+                  startScreen = document.getElementById('startScreen'),
+                  startButton = document.getElementById('startButton'),
+                  mobileStartButton = document.getElementById('mobileStartButton');
+
+            assets.playerImage.src = 'player.png'; assets.enemyImage.src = 'enemy.png';
+            const clamp = (val, min, max) => Math.min(Math.max(val, min), max),
+                  distance = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1),
+                  lerp = (start, end, t) => start + (end - start) * t;
+
+            function generateStars() { state.stars = Array(Config.STAR_COUNT).fill().map(() => ({ x: Math.random() * canvas.width * 2 - canvas.width, y: Math.random() * canvas.height * 2 - canvas.height, brightness: Math.random() * (Config.STAR_MAX_BRIGHTNESS - Config.STAR_MIN_BRIGHTNESS) + Config.STAR_MIN_BRIGHTNESS, twinkleTime: Math.random() * 2000 + 1000, lastTwinkle: performance.now(), size: Math.random() * 3 + 1.5, color: ['#ffffff', '#ffeeee', '#eeeeff'][Math.floor(Math.random() * 3)] })); }
+            function generateCity(xOffset = 0) { const width = Math.random() * (Config.CITY_MAX_SIZE - Config.CITY_MIN_SIZE) + Config.CITY_MIN_SIZE, height = Math.random() * (Config.CITY_MAX_SIZE * 0.6 - Config.CITY_MIN_SIZE * 0.6) + Config.CITY_MIN_SIZE * 0.6, buildings = Array(Math.floor(Math.random() * 5 + 3)).fill().map((_, i) => ({ width: width / (Math.floor(Math.random() * 5 + 3)) * (0.8 + Math.random() * 0.4), height: height * (0.3 + Math.random() * 0.4) + Math.random() * (height - height * (0.3 + Math.random() * 0.4)), offset: i * (width / (Math.floor(Math.random() * 5 + 3))) })), lights = Array(Config.CITY_LIGHT_COUNT).fill().map(() => ({ x: Math.random() * width - width / 2, y: Math.random() * height - height / 2, color: ['#ff4444', '#ffffff', '#ffff44', '#44ff44'][Math.floor(Math.random() * 4)], brightness: Math.random() * 0.8 + 0.2, twinkleTime: Math.random() * 1000 + 500, lastTwinkle: performance.now() })); return { x: canvas.width / 2 + xOffset, y: Math.random() * canvas.height * 0.8 - canvas.height * 0.4, width, height, buildings, lights }; }
+            function generateCities() { state.cities = []; let xOffset = 0; for (let i = 0; i < Config.CITY_COUNT; i++) { const city = generateCity(xOffset); state.cities.push(city); xOffset += (city.width + Math.random() * Config.CITY_MAX_SIZE) * Config.CITY_SPACING_FACTOR; } }
+            function generateTinyCity(xOffset = 0) { const width = Math.random() * (Config.TINY_CITY_MAX_SIZE - Config.TINY_CITY_MIN_SIZE) + Config.TINY_CITY_MIN_SIZE, height = Math.random() * (Config.TINY_CITY_MAX_SIZE * 0.6 - Config.TINY_CITY_MIN_SIZE * 0.6) + Config.TINY_CITY_MIN_SIZE * 0.6, lights = Array(5).fill().map(() => ({ x: Math.random() * width - width / 2, y: Math.random() * height - height / 2, color: ['#d8b2ff', '#c8a2ef', '#b892df'][Math.floor(Math.random() * 3)], brightness: Math.random() * 0.8 + 0.2, twinkleTime: Math.random() * 1000 + 500, lastTwinkle: performance.now() })); return { x: canvas.width / 2 + xOffset, y: Math.random() * canvas.height * 0.8 - canvas.height * 0.4, width, height, lights }; }
+            function generateTinyCities() { state.tinyCities = []; let xOffset = 0; for (let i = 0; i < Config.TINY_CITY_COUNT; i++) { const tinyCity = generateTinyCity(xOffset); state.tinyCities.push(tinyCity); xOffset += (tinyCity.width + Math.random() * Config.TINY_CITY_MAX_SIZE) * Config.CITY_SPACING_FACTOR; } }
+
+            function init() {
+                resizeCanvas();
+                generateStars();
+                generateCities();
+                generateTinyCities();
+                window.addEventListener('resize', resizeCanvas);
+                window.addEventListener('keydown', e => { const key = e.key.toLowerCase(); if (['e', 's', 'd', 'f', '1', '2', '3', '4', '6', '7', '8', '9', 'arrowup', 'arrowleft', 'arrowdown', 'arrowright'].includes(key)) state.keys.add(key); if (key === 'enter' && !state.gameStarted) startGame('keyboard'); else if (key === 'p' && state.gameStarted && performance.now() - state.lastPauseTime > 200) { togglePause('keyboard'); state.lastPauseTime = performance.now(); } });
+                window.addEventListener('keyup', e => state.keys.delete(e.key.toLowerCase()));
+                window.addEventListener('mousemove', e => { state.mouseX = e.clientX; state.mouseY = e.clientY; });
+                window.addEventListener('mousedown', e => e.button === 0 && (state.mouseDown = true));
+                window.addEventListener('mouseup', e => e.button === 0 && (state.mouseDown = false));
+                window.addEventListener('gamepadconnected', () => { state.gamepadConnected = true; checkGamepadInput(); });
+                window.addEventListener('gamepaddisconnected', () => state.gamepadConnected = false);
+
+                joystickContainer.addEventListener('touchstart', e => { e.preventDefault(); if (!state.joystick.touchId) { state.joystick.touchId = e.touches[0].identifier; state.joystick.active = true; } });
+                joystickContainer.addEventListener('touchmove', e => { e.preventDefault(); const touch = Array.from(e.touches).find(t => t.identifier === state.joystick.touchId); if (touch) { const rect = joystickContainer.getBoundingClientRect(), maxDistance = 30; let x = touch.clientX - rect.left - 50, y = touch.clientY - rect.top - 50, dist = Math.hypot(x, y); if (dist > maxDistance) { const angle = Math.atan2(y, x); x = maxDistance * Math.cos(angle); y = maxDistance * Math.sin(angle); } joystick.style.left = `${50 + x}px`; joystick.style.top = `${50 + y}px`; state.joystick.x = x / maxDistance; state.joystick.y = y / maxDistance; } });
+                joystickContainer.addEventListener('touchend', e => { e.preventDefault(); if (e.changedTouches[0].identifier === state.joystick.touchId) { state.joystick.active = false; state.joystick.touchId = null; state.joystick.x = state.joystick.y = 0; joystick.style.left = joystick.style.top = '50%'; } });
+
+                shootJoystickContainer.addEventListener('touchstart', e => { e.preventDefault(); if (!state.shootJoystick.touchId) { state.shootJoystick.touchId = e.touches[0].identifier; state.shootJoystick.active = true; } });
+                shootJoystickContainer.addEventListener('touchmove', e => { e.preventDefault(); const touch = Array.from(e.touches).find(t => t.identifier === state.shootJoystick.touchId); if (touch) { const rect = shootJoystickContainer.getBoundingClientRect(), maxDistance = 30; let x = touch.clientX - rect.left - 50, y = touch.clientY - rect.top - 50, dist = Math.hypot(x, y); if (dist > maxDistance) { const angle = Math.atan2(y, x); x = maxDistance * Math.cos(angle); y = maxDistance * Math.sin(angle); } shootJoystick.style.left = `${50 + x}px`; shootJoystick.style.top = `${50 + y}px`; state.shootJoystick.x = x / maxDistance; state.shootJoystick.y = y / maxDistance; } });
+                shootJoystickContainer.addEventListener('touchend', e => { e.preventDefault(); if (e.changedTouches[0].identifier === state.shootJoystick.touchId) { state.shootJoystick.active = false; state.shootJoystick.touchId = null; state.shootJoystick.x = state.shootJoystick.y = 0; shootJoystick.style.left = shootJoystick.style.top = '50%'; } });
+
+                document.addEventListener('touchstart', e => state.swipeStartY = e.touches[0].clientY);
+                document.addEventListener('touchmove', e => { if (state.swipeStartY && state.gameStarted) { const currentY = e.touches[0].clientY, deltaY = state.swipeStartY - currentY, startX = e.touches[0].clientX; if (state.swipeStartY > window.innerHeight - 50 && currentY < 50 && deltaY > window.innerHeight * 0.8 && startX > window.innerWidth * 0.4 && startX < window.innerWidth * 0.6) { togglePause('mobile'); state.swipeStartY = null; } } });
+                document.addEventListener('touchend', () => state.swipeStartY = null);
+
+                if (/Mobi|Android|iOS/i.test(navigator.userAgent)) {
+                    joystickContainer.style.display = 'block';
+                    shootJoystickContainer.style.display = 'block';
+                    mobileStartButton.style.display = 'block';
+                }
+                startButton.addEventListener('click', () => startGame('mouse'));
+                mobileStartButton.addEventListener('click', () => startGame('mobile'));
+                Promise.all([new Promise(r => assets.playerImage.onload = r), new Promise(r => assets.enemyImage.onload = r)]).then(() => assets.loaded = true).catch(e => console.warn('Asset load failed:', e));
+                checkGamepadInput();
+                requestAnimationFrame(gameLoop);
+            }
+
+            function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; camera.x = player.x - canvas.width / 2; camera.y = player.y - canvas.height / 2; }
+
+            function playSound(type, freq, duration, volume = 0.3) {
+                const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+                osc.connect(gain); gain.connect(audioCtx.destination); osc.type = type; osc.frequency.value = freq;
+                gain.gain.setValueAtTime(volume, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+                osc.start(); osc.stop(audioCtx.currentTime + duration);
+            }
+
+            const audioEffects = { shoot: () => playSound('sawtooth', 1200, 0.1), explosion: () => playSound('sawtooth', 100, 0.5), milestone: () => { playSound('sine', 880, 0.3, 0.4); setTimeout(() => playSound('sine', 659, 0.3, 0.4), 200); } };
+
+            function calculateDistanceToEdge(startX, startY, angle) {
+                const cosAngle = Math.cos(angle), sinAngle = Math.sin(angle), leftEdge = camera.x, rightEdge = camera.x + canvas.width, topEdge = camera.y, bottomEdge = camera.y + canvas.height;
+                let distances = [];
+                if (cosAngle < 0) { const t = (leftEdge - startX) / cosAngle, y = startY + t * sinAngle; if (y >= topEdge && y <= bottomEdge) distances.push(t); }
+                if (cosAngle > 0) { const t = (rightEdge - startX) / cosAngle, y = startY + t * sinAngle; if (y >= topEdge && y <= bottomEdge) distances.push(t); }
+                if (sinAngle < 0) { const t = (topEdge - startY) / sinAngle, x = startX + t * cosAngle; if (x >= leftEdge && x <= rightEdge) distances.push(t); }
+                if (sinAngle > 0) { const t = (bottomEdge - startY) / sinAngle, x = startX + t * cosAngle; if (x >= leftEdge && x <= rightEdge) distances.push(t); }
+                return distances.filter(d => d > 0).length > 0 ? Math.min(...distances) : canvas.width;
+            }
+
+            function shootLaser(timestamp) {
+                let startX, startY, dx, dy;
+                const angle = state.playerRotation, speed = Config.LASER_SPEED;
+                dx = speed * Math.cos(angle); dy = speed * Math.sin(angle);
+                if (!assets.loaded || !assets.playerImage.naturalWidth) {
+                    startX = player.x; startY = player.y;
+                    lasers.push({ x: startX, y: startY, dx, dy, angle, time: timestamp, distanceToEdge: calculateDistanceToEdge(startX, startY, angle) });
+                    muzzleFlashes.push({ x: startX, y: startY, startTime: timestamp, angle });
+                } else {
+                    const w = assets.playerImage.naturalWidth, h = assets.playerImage.naturalHeight;
+                    let gunOffsetX = w * 0.31, gunOffsetY = -h * 0.25;
+                    const cosAngle = Math.cos(angle), sinAngle = Math.sin(angle);
+                    const rotatedOffsetX = gunOffsetX * cosAngle - gunOffsetY * sinAngle, rotatedOffsetY = gunOffsetX * sinAngle + gunOffsetY * cosAngle;
+                    startX = player.x + rotatedOffsetX; startY = player.y + rotatedOffsetY;
+                    lasers.push({ x: startX, y: startY, dx, dy, angle, time: timestamp, distanceToEdge: calculateDistanceToEdge(startX, startY, angle) });
+                    muzzleFlashes.push({ x: startX, y: startY, startTime: timestamp, angle });
+                    audioEffects.shoot();
+                }
+            }
+
+            function startGame(method) {
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                startScreen.style.display = 'none';
+                mobileStartButton.style.display = method === 'mobile' ? 'none' : mobileStartButton.style.display;
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen().catch(console.error);
+                } else if (document.documentElement.mozRequestFullScreen) { /* Firefox */
+                    document.documentElement.mozRequestFullScreen().catch(console.error);
+                } else if (document.documentElement.webkitRequestFullscreen) { /* Chrome, Safari and Opera */
+                    document.documentElement.webkitRequestFullscreen().catch(console.error);
+                } else if (document.documentElement.msRequestFullscreen) { /* IE/Edge */
+                    document.documentElement.msRequestFullscreen().catch(console.error);
+                }
+                state.gameStarted = true; state.isPaused = false; state.lastPauseEvent = null;
+            }
+
+            function togglePause(method) {
+                if (!state.gameStarted) return;
+                if (!state.lastPauseEvent || state.lastPauseEvent === method) {
+                    state.isPaused = !state.isPaused;
+                    state.lastPauseEvent = state.isPaused ? method : null;
+                    startScreen.style.display = state.isPaused ? 'flex' : 'none';
+                    startButton.textContent = state.isPaused ? 'Paused' : 'Start Game';
+                }
+            }
+
+            function checkGamepadInput() {
+                if (state.gamepadConnected) {
+                    const gp = navigator.getGamepads()[0];
+                    if (gp && gp.buttons[9].pressed && performance.now() - state.lastPauseTime > 200) {
+                        if (!state.gameStarted) startGame('gamepad');
+                        else togglePause('gamepad');
+                        state.lastPauseTime = performance.now();
+                    }
+                }
+                requestAnimationFrame(checkGamepadInput);
+            }
+
+            function update(timestamp) {
+                if (!state.gameStarted || state.isPaused) return;
+                const delta = Math.min(timestamp - state.lastTime, 1000 / Config.FPS_TARGET);
+                state.lastTime = timestamp;
+
+                let rightmostX = -Infinity;
+                state.isShooting = false;
+
+                // Updated numerical key handling with specified directions
+                const fireAngles = { 
+                    '1': -3 * Math.PI / 4,  // Southwest
+                    '2': -Math.PI / 2,      // South
+                    '3': -Math.PI / 4,      // Southeast
+                    '4': Math.PI,          // West
+                    '6': 0,                // East
+                    '7': 3 * Math.PI / 4,  // Northwest
+                    '8': Math.PI / 2,      // North
+                    '9': Math.PI / 4       // Northeast
+                };
+                
+                for (const key in fireAngles) {
+                    if (state.keys.has(key)) {
+                        // Set player rotation to match shooting direction
+                        state.playerRotation = fireAngles[key];
+                        if (timestamp - state.lastShotTime >= Config.SHOT_COOLDOWN) {
+                            shootLaser(timestamp);
+                            state.lastShotTime = timestamp;
+                        }
+                        state.isShooting = true;
+                        break; // Only process one shooting key at a time
+                    }
+                }
+
+                // Mouse control (only if not shooting with number keys)
+                if (!state.isShooting) {
+                    state.playerRotation = Math.atan2(state.mouseY - (player.y - camera.y), state.mouseX - (player.x - camera.x));
+                }
+                if (state.mouseDown && timestamp - state.lastShotTime >= Config.SHOT_COOLDOWN) {
+                    shootLaser(timestamp);
+                    state.lastShotTime = timestamp;
+                    state.isShooting = true;
+                }
+
+                const moveSpeed = Config.MOVE_SPEED * (delta / 16.67);
+                if (state.keys.has('e') || state.keys.has('arrowup')) player.y -= moveSpeed;
+                if (state.keys.has('s') || state.keys.has('arrowleft')) player.x -= moveSpeed;
+                if (state.keys.has('d') || state.keys.has('arrowdown')) player.y += moveSpeed;
+                if (state.keys.has('f') || state.keys.has('arrowright')) player.x += moveSpeed;
+
+                if (state.gamepadConnected) {
+                    const gp = navigator.getGamepads()[0];
+                    if (gp) {
+                        const moveX = gp.axes[0], moveY = -gp.axes[1], moveMagnitude = Math.hypot(moveX, moveY);
+                        if (moveMagnitude > 0.2) {
+                            state.playerRotation += moveX * Config.ROTATION_SPEED * (delta / 16.67);
+                            player.x += Math.cos(state.playerRotation) * moveY * Config.MOVE_SPEED * (delta / 16.67);
+                            player.y += Math.sin(state.playerRotation) * moveY * Config.MOVE_SPEED * (delta / 16.67);
+                            if (moveY > 0 && timestamp - state.lastShotTime >= Config.SHOT_COOLDOWN) {
+                                shootLaser(timestamp);
+                                state.lastShotTime = timestamp;
+                            }
+                            state.isShooting = true;
+                        }
+                    }
+                }
+
+                if (state.joystick.active) {
+                    const moveMagnitude = Math.hypot(state.joystick.x, state.joystick.y);
+                    if (moveMagnitude > 0.2) {
+                        state.playerRotation += state.joystick.x * Config.ROTATION_SPEED * (delta / 16.67);
+                        player.x += Math.cos(state.playerRotation) * state.joystick.y * Config.MOVE_SPEED * (delta / 16.67);
+                        player.y += Math.sin(state.playerRotation) * state.joystick.y * Config.MOVE_SPEED * (delta / 16.67);
+                        if (state.joystick.y > 0 && timestamp - state.lastShotTime >= Config.SHOT_COOLDOWN) {
+                            shootLaser(timestamp);
+                            state.lastShotTime = timestamp;
+                        }
+                        state.isShooting = true;
+                    }
+                }
+
+                if (state.shootJoystick.active && Math.hypot(state.shootJoystick.x, state.shootJoystick.y) > 0.2) {
+                    state.playerRotation = Math.atan2(state.shootJoystick.y, state.shootJoystick.x);
+                    if (timestamp - state.lastShotTime >= Config.SHOT_COOLDOWN) {
+                        shootLaser(timestamp);
+                        state.lastShotTime = timestamp;
+                    }
+                    state.isShooting = true;
+                }
+
+                const parallaxSpeedStars = Config.STAR_SPEED * 0.375, parallaxSpeedCities = Config.CITY_SPEED * 0.25, parallaxSpeedTinyCities = Config.CITY_SPEED * 0.125;
+                state.stars.forEach(star => {
+                    star.x += (player.x - camera.x) * parallaxSpeedStars * (delta / 16.67);
+                    star.y += (player.y - camera.y) * parallaxSpeedStars * (delta / 16.67);
+                    if (star.x < -canvas.width) star.x += canvas.width * 2; if (star.x > canvas.width) star.x -= canvas.width * 2;
+                    if (star.y < -canvas.height) star.y += canvas.height * 2; if (star.y > canvas.height) star.y -= canvas.height * 2;
+                    if (timestamp - star.lastTwinkle > star.twinkleTime) {
+                        star.brightness = Math.random() < Config.STAR_TWINKLE_CHANCE ? Config.STAR_MAX_BRIGHTNESS : Math.random() * (Config.STAR_MAX_BRIGHTNESS - Config.STAR_MIN_BRIGHTNESS) + Config.STAR_MIN_BRIGHTNESS;
+                        star.lastTwinkle = timestamp;
+                        star.twinkleTime = Math.random() * 2000 + 1000;
+                    }
+                    star.brightness = lerp(star.brightness, Config.STAR_MIN_BRIGHTNESS, 0.05 * (delta / 16.67));
+                });
+                state.cities.forEach(city => {
+                    city.x -= (player.x - camera.x) * parallaxSpeedCities * (delta / 16.67);
+                    city.y -= (player.y - camera.y) * parallaxSpeedCities * (delta / 16.67);
+                    rightmostX = Math.max(rightmostX, city.x + city.width / 2);
+                    if (city.x + city.width / 2 < -canvas.width / 2) {
+                        city.x = rightmostX + (city.width + Math.random() * Config.CITY_MAX_SIZE) * Config.CITY_SPACING_FACTOR;
+                        city.y = Math.random() * canvas.height * 0.8 - canvas.height * 0.4;
+                        city.width = Math.random() * (Config.CITY_MAX_SIZE - Config.CITY_MIN_SIZE) + Config.CITY_MIN_SIZE;
+                        city.height = Math.random() * (Config.CITY_MAX_SIZE * 0.6 - Config.CITY_MIN_SIZE * 0.6) + Config.CITY_MIN_SIZE * 0.6;
+                        city.buildings = Array(Math.floor(Math.random() * 5 + 3)).fill().map((_, i) => ({ width: city.width / (Math.floor(Math.random() * 5 + 3)) * (0.8 + Math.random() * 0.4), height: city.height * (0.3 + Math.random() * 0.4) + Math.random() * (city.height - city.height * (0.3 + Math.random() * 0.4)), offset: i * (city.width / (Math.floor(Math.random() * 5 + 3))) }));
+                        city.lights = Array(Config.CITY_LIGHT_COUNT).fill().map(() => ({ x: Math.random() * city.width - city.width / 2, y: Math.random() * city.height - city.height / 2, color: ['#ff4444', '#ffffff', '#ffff44', '#44ff44'][Math.floor(Math.random() * 4)], brightness: Math.random() * 0.8 + 0.2, twinkleTime: Math.random() * 1000 + 500, lastTwinkle: timestamp }));
+                    }
+                    city.lights.forEach(light => {
+                        if (timestamp - light.lastTwinkle > light.twinkleTime) {
+                            light.brightness = Math.random() < Config.CITY_LIGHT_TWINKLE_CHANCE ? 1.0 : Math.random() * 0.8 + 0.2;
+                            light.lastTwinkle = timestamp;
+                            light.twinkleTime = Math.random() * 1000 + 500;
+                        }
+                        light.brightness = lerp(light.brightness, 0.2, 0.1 * (delta / 16.67));
+                    });
+                });
+                state.tinyCities.forEach(tinyCity => {
+                    tinyCity.x += (player.x - camera.x) * parallaxSpeedTinyCities * (delta / 16.67);
+                    tinyCity.y += (player.y - camera.y) * parallaxSpeedTinyCities * (delta / 16.67);
+                    rightmostX = Math.max(rightmostX, tinyCity.x + tinyCity.width / 2);
+                    if (tinyCity.x + tinyCity.width / 2 < -canvas.width / 2) {
+                        tinyCity.x = rightmostX + (tinyCity.width + Math.random() * Config.TINY_CITY_MAX_SIZE) * Config.CITY_SPACING_FACTOR;
+                        tinyCity.y = Math.random() * canvas.height * 0.8 - canvas.height * 0.4;
+                        tinyCity.width = Math.random() * (Config.TINY_CITY_MAX_SIZE - Config.TINY_CITY_MIN_SIZE) + Config.TINY_CITY_MIN_SIZE;
+                        tinyCity.height = Math.random() * (Config.TINY_CITY_MAX_SIZE * 0.6 - Config.TINY_CITY_MIN_SIZE * 0.6) + Config.TINY_CITY_MIN_SIZE * 0.6;
+                        tinyCity.lights = Array(5).fill().map(() => ({ x: Math.random() * tinyCity.width - tinyCity.width / 2, y: Math.random() * tinyCity.height - tinyCity.height / 2, color: ['#d8b2ff', '#c8a2ef', '#b892df'][Math.floor(Math.random() * 3)], brightness: Math.random() * 0.8 + 0.2, twinkleTime: Math.random() * 1000 + 500, lastTwinkle: timestamp }));
+                    }
+                    tinyCity.lights.forEach(light => {
+                        if (timestamp - light.lastTwinkle > light.twinkleTime) {
+                            light.brightness = Math.random() < Config.CITY_LIGHT_TWINKLE_CHANCE ? 1.0 : Math.random() * 0.8 + 0.2;
+                            light.lastTwinkle = timestamp;
+                            light.twinkleTime = Math.random() * 1000 + 500;
+                        }
+                        light.brightness = lerp(light.brightness, 0.2, 0.1 * (delta / 16.67));
+                    });
+                });
+
+                if (timestamp - state.lastSpawnTime >= Config.SPAWN_INTERVAL) {
+                    const side = Math.floor(Math.random() * 4), offset = { x: 0, y: 0 };
+                    [offset.x, offset.y] = [[0, -canvas.height / 2 - Config.ENEMY_SIZE], [canvas.width / 2 + Config.ENEMY_SIZE, Math.random() * canvas.height - canvas.height / 2],
+                                          [Math.random() * canvas.width - canvas.width / 2, canvas.height / 2 + Config.ENEMY_SIZE], [-canvas.width / 2 - Config.ENEMY_SIZE, Math.random() * canvas.height - canvas.height / 2]][side];
+                    enemies.push({ x: player.x + offset.x, y: player.y + offset.y, rotation: 0, z: 0, targetZ: 0, zoomTime: timestamp, zoomInterval: Math.random() * 5000 + 3000 });
+                    state.lastSpawnTime = timestamp;
+                }
+
+                enemies.forEach(e => {
+                    const dx = player.x - e.x, dy = player.y - e.y, dist = Math.hypot(dx, dy);
+                    e.x += (dx / dist) * Config.ENEMY_SPEED * (delta / 16.67);
+                    e.y += (dy / dist) * Config.ENEMY_SPEED * (delta / 16.67);
+                    e.rotation += Config.ENEMY_ROTATION_SPEED;
+                    if (timestamp - e.zoomTime >= e.zoomInterval) {
+                        e.targetZ = Math.random() < 0.2 ? Config.ENEMY_ZOOM_MAX : Math.random() < 0.4 ? Config.ENEMY_ZOOM_MIN : Math.random() * (Config.ENEMY_ZOOM_MAX - Config.ENEMY_ZOOM_MIN) + Config.ENEMY_ZOOM_MIN;
+                        e.zoomTime = timestamp; e.zoomInterval = Math.random() * 5000 + 3000;
+                    }
+                    e.z = lerp(e.z, e.targetZ, Config.ENEMY_ZOOM_SPEED * delta);
+                });
+
+                lasers.forEach((l, i) => { l.x += l.dx * (delta / 16.67); l.y += l.dy * (delta / 16.67); if (Math.abs(l.x - player.x) > canvas.width || Math.abs(l.y - player.y) > canvas.height) lasers.splice(i, 1); });
+                explosions.forEach((e, i) => { e.radius = ((timestamp - e.startTime) / Config.EXPLOSION_DURATION) * Config.EXPLOSION_MAX_RADIUS; if (timestamp - e.startTime >= Config.EXPLOSION_DURATION) explosions.splice(i, 1); });
+                muzzleFlashes.forEach((m, i) => { if (timestamp - m.startTime >= Config.MUZZLE_FLASH_DURATION) muzzleFlashes.splice(i, 1); });
+
+                enemies.forEach((e, i) => lasers.forEach((l, j) => {
+                    const dx = l.x - e.x, dy = l.y - e.y, dist = Math.hypot(dx, dy), scale = calculateMode7Scale(e);
+                    if (dist < Config.LASER_WIDTH + Math.max((assets.loaded ? assets.enemyImage.naturalWidth / 2 : Config.ENEMY_SIZE / 2) * scale, (assets.loaded ? assets.enemyImage.naturalHeight / 2 : Config.ENEMY_SIZE / 2) * scale)) {
+                        explosions.push({ x: e.x, y: e.y, radius: 0, startTime: timestamp }); audioEffects.explosion();
+                        enemies.splice(i, 1); lasers.splice(j, 1); state.score += 10;
+                        if (Math.floor(state.score / 100) > Math.floor(state.previousScore / 100)) audioEffects.milestone();
+                        state.previousScore = state.score;
+                    }
+                }));
+
+                camera.x = player.x - canvas.width / 2; camera.y = player.y - canvas.height / 2;
+            }
+
+            function calculateMode7Scale(enemy) { return clamp(Config.MODE7_HORIZON / (Config.MODE7_HORIZON + enemy.z - (enemy.y - camera.y) * Config.MODE7_PERSPECTIVE), Config.ENEMY_ZOOM_MIN, Config.ENEMY_ZOOM_MAX); }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.save(); ctx.translate(-camera.x * Config.STAR_SPEED * 0.375, -camera.y * Config.STAR_SPEED * 0.375); state.stars.forEach(star => { ctx.beginPath(); ctx.arc(star.x, star.y, star.size * star.brightness, 0, Math.PI * 2); ctx.fillStyle = star.color; ctx.globalAlpha = star.brightness; ctx.fill(); if (star.brightness > 0.8) { ctx.shadowBlur = Config.STAR_GLOW_SIZE; ctx.shadowColor = star.color; ctx.fill(); ctx.shadowBlur = 0; } ctx.globalAlpha = 1.0; }); ctx.restore();
+
+                ctx.save(); ctx.translate(-camera.x * Config.CITY_SPEED * 0.25, -camera.y * Config.CITY_SPEED * 0.25); state.cities.forEach(city => { ctx.save(); ctx.translate(city.x - city.width / 2, city.y - city.height / 2); city.buildings.forEach(building => { const grad = ctx.createLinearGradient(building.offset, 0, building.offset + building.width, 0); grad.addColorStop(0, 'rgba(80, 80, 120, 0.8)'); grad.addColorStop(0.5, 'rgba(120, 120, 180, 0.9)'); grad.addColorStop(1, 'rgba(80, 80, 120, 0.8)'); ctx.fillStyle = grad; ctx.fillRect(building.offset, city.height - building.height, building.width, building.height); ctx.strokeStyle = 'rgba(150, 150, 200, 0.3)'; ctx.lineWidth = 1; ctx.strokeRect(building.offset, city.height - building.height, building.width, building.height); }); city.lights.forEach(light => { ctx.beginPath(); ctx.arc(light.x + city.width / 2, light.y + city.height / 2, 2.5 * light.brightness, 0, Math.PI * 2); ctx.fillStyle = light.color; ctx.globalAlpha = light.brightness; ctx.fill(); if (light.brightness > 0.7) { ctx.shadowBlur = 8; ctx.shadowColor = light.color; ctx.fill(); ctx.shadowBlur = 0; } ctx.globalAlpha = 1.0; }); ctx.restore(); }); ctx.restore();
+
+                ctx.save(); ctx.translate(-camera.x * Config.CITY_SPEED * 0.125, -camera.y * Config.CITY_SPEED * 0.125); state.tinyCities.forEach(tinyCity => { ctx.save(); ctx.translate(tinyCity.x - tinyCity.width / 2, tinyCity.y - tinyCity.height / 2); ctx.fillStyle = '#d8b2ff'; ctx.strokeStyle = '#4b0082'; ctx.lineWidth = 2; ctx.strokeRect(0, 0, tinyCity.width, tinyCity.height); ctx.fillRect(0, 0, tinyCity.width, tinyCity.height); tinyCity.lights.forEach(light => { ctx.beginPath(); ctx.arc(light.x + tinyCity.width / 2, light.y + tinyCity.height / 2, 2 * light.brightness, 0, Math.PI * 2); ctx.fillStyle = light.color; ctx.globalAlpha = light.brightness; ctx.fill(); if (light.brightness > 0.7) { ctx.shadowBlur = 4; ctx.shadowColor = light.color; ctx.fill(); ctx.shadowBlur = 0; } ctx.globalAlpha = 1.0; }); ctx.restore(); }); ctx.restore();
+
+                ctx.save(); ctx.translate(-camera.x, -camera.y);
+                if (assets.loaded && assets.playerImage.naturalWidth) { const w = assets.playerImage.naturalWidth, h = assets.playerImage.naturalHeight; ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(state.playerRotation); ctx.shadowBlur = 15; ctx.shadowColor = '#00ff88'; ctx.drawImage(assets.playerImage, -w / 2, -h / 2, w, h); ctx.shadowBlur = 0; ctx.restore(); } else { const grad = ctx.createRadialGradient(player.x, player.y, 5, player.x, player.y, Config.PLAYER_SIZE); grad.addColorStop(0, '#00ff88'); grad.addColorStop(1, '#006633'); ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(player.x, player.y, Config.PLAYER_SIZE, 0, Math.PI * 2); ctx.fill(); }
+
+                muzzleFlashes.forEach(m => {
+                    ctx.save();
+                    ctx.translate(m.x, m.y);
+                    ctx.rotate(m.angle);
+                    const fade = 1 - (performance.now() - m.startTime) / Config.MUZZLE_FLASH_DURATION;
+                    const glowPulse = Math.sin(performance.now() * 0.05) * 0.2 + 0.8;
+                    ctx.shadowBlur = 25;
+                    ctx.shadowColor = `rgba(0, 255, 136, ${fade * 0.8 * glowPulse})`;
+                    const gradient = ctx.createLinearGradient(0, 0, Config.MUZZLE_FLASH_SIZE, 0);
+                    gradient.addColorStop(0, `rgba(0, 255, 136, ${fade * 0.4})`);
+                    gradient.addColorStop(0.7, `rgba(0, 255, 136, ${fade * 0.2})`);
+                    gradient.addColorStop(1, "rgba(0, 255, 136, 0)");
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(Config.MUZZLE_FLASH_SIZE, -Config.MUZZLE_FLASH_SIZE / 2);
+                    ctx.lineTo(Config.MUZZLE_FLASH_SIZE, Config.MUZZLE_FLASH_SIZE / 2);
+                    ctx.fill();
+                    ctx.fillStyle = `rgba(0, 255, 136, ${fade * 0.3})`;
+                    for (let x = Config.MUZZLE_FLASH_SIZE * 0.7; x < Config.MUZZLE_FLASH_SIZE; x += 2)
+                        for (let y = -Config.MUZZLE_FLASH_SIZE / 2; y < Config.MUZZLE_FLASH_SIZE / 2; y += 2)
+                            if (Math.random() < fade * 0.5 * (1 - (x - Config.MUZZLE_FLASH_SIZE * 0.7) / (Config.MUZZLE_FLASH_SIZE * 0.3)))
+                                ctx.fillRect(x, y, 1, 1);
+                    ctx.shadowBlur = 0;
+                    ctx.restore();
+                });
+
+                ctx.shadowBlur = 20; ctx.shadowColor = '#00ff88'; ctx.strokeStyle = '#00ff88'; ctx.lineWidth = Config.LASER_WIDTH;
+                lasers.forEach(l => { 
+                    ctx.save(); 
+                    ctx.translate(l.x, l.y); 
+                    ctx.rotate(l.angle); 
+                    const pulse = Math.sin((performance.now() - l.time) / 1000 * Config.LASER_PULSE_SPEED) * 0.5 + 0.5; 
+                    ctx.lineWidth = Config.LASER_WIDTH + pulse * 2; 
+                    ctx.globalAlpha = 0.7 + pulse * 0.3; 
+                    ctx.beginPath(); 
+                    ctx.moveTo(0, 0); 
+                    ctx.lineTo(l.distanceToEdge, 0);
+                    ctx.stroke(); 
+                    ctx.globalAlpha = 1.0; 
+                    ctx.restore(); 
+                });
+                ctx.shadowBlur = 0;
+
+                enemies.forEach(e => { ctx.save(); ctx.translate(e.x, e.y); const scale = calculateMode7Scale(e); ctx.rotate(e.rotation); ctx.scale(scale, scale); if (assets.loaded && assets.enemyImage.naturalWidth) { const w = assets.enemyImage.naturalWidth, h = assets.enemyImage.naturalHeight; ctx.shadowBlur = 10; ctx.shadowColor = '#4444ff'; ctx.drawImage(assets.enemyImage, -w / 2, -h / 2, w, h); ctx.shadowBlur = 0; } else { const grad = ctx.createRadialGradient(0, 0, 5, 0, 0, Config.ENEMY_SIZE / 2); grad.addColorStop(0, '#4444ff'); grad.addColorStop(1, '#222288'); ctx.fillStyle = grad; ctx.fillRect(-Config.ENEMY_SIZE / 2, -Config.ENEMY_SIZE / 2, Config.ENEMY_SIZE, Config.ENEMY_SIZE); } ctx.restore(); });
+
+                ctx.fillStyle = 'rgba(255, 165, 0, 0.8)';
+                explosions.forEach(e => { const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, e.radius); grad.addColorStop(0, 'rgba(255, 165, 0, 0.8)'); grad.addColorStop(1, 'rgba(255, 0, 0, 0)'); ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.fill(); });
+
+                ctx.restore();
+                ctx.fillStyle = '#00ff88'; ctx.font = '20px Arial'; ctx.textAlign = 'center'; ctx.shadowBlur = 5; ctx.shadowColor = '#00ff88';
+                ctx.fillText(`Score: ${state.score}`, canvas.width / 2, canvas.height - 20); ctx.shadowBlur = 0;
+            }
+
+            function gameLoop(timestamp) { update(timestamp); draw(); requestAnimationFrame(gameLoop); }
+
+            init();
+        });
+    </script>
+</body>
+</html>
